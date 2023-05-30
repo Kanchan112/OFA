@@ -1,26 +1,26 @@
-# Copyright 2022 The OFA-Sys Team. 
+# Copyright 2022 The OFA-Sys Team.
 # All rights reserved.
-# This source code is licensed under the Apache 2.0 license 
+# This source code is licensed under the Apache 2.0 license
 # found in the LICENSE file in the root directory.
 
-from dataclasses import dataclass, field
 import json
 import logging
-from typing import Optional
+import string
 from argparse import Namespace
-from itertools import zip_longest
 from collections import OrderedDict
+from dataclasses import dataclass, field
+from itertools import zip_longest
+from typing import Optional
 
 import numpy as np
 import sacrebleu
-import string
+from data.file_dataset import FileDataset
+from data.mm_data.caption_dataset import CaptionDataset
 from fairseq import metrics, utils
 from fairseq.tasks import register_task
+from tasks.ofa_task import OFAConfig, OFATask
 
-from tasks.ofa_task import OFATask, OFAConfig
-from data.mm_data.caption_dataset import CaptionDataset
-from data.file_dataset import FileDataset
-from utils.cider.pyciderevalcap.ciderD.ciderD import CiderD
+from OFA.utils.cider.pyciderevalcap.ciderD.ciderD import CiderD
 
 EVAL_BLEU_ORDER = 4
 
@@ -36,7 +36,7 @@ class CaptionConfig(OFAConfig):
         default=False, metadata={"help": "evaluation with CIDEr scores"}
     )
     eval_args: Optional[str] = field(
-        default='{}',
+        default="{}",
         metadata={
             "help": 'generation args for BLUE or CIDEr scoring, e.g., \'{"beam": 4, "lenpen": 0.6}\', as JSON string'
         },
@@ -53,9 +53,9 @@ class CaptionConfig(OFAConfig):
         default=False, metadata={"help": "Self-critical sequence training"}
     )
     scst_args: str = field(
-        default='{}',
+        default="{}",
         metadata={
-            "help": 'generation args for Self-critical sequence training, as JSON string'
+            "help": "generation args for Self-critical sequence training, as JSON string"
         },
     )
 
@@ -66,10 +66,10 @@ class CaptionTask(OFATask):
         super().__init__(cfg, src_dict, tgt_dict)
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
-        paths = self.cfg.data.split(',')
+        paths = self.cfg.data.split(",")
         assert len(paths) > 0
 
-        if split == 'train':
+        if split == "train":
             file_path = paths[(epoch - 1) % (len(paths) - 1)]
         else:
             file_path = paths[-1]
@@ -85,7 +85,7 @@ class CaptionTask(OFATask):
             max_tgt_length=self.cfg.max_tgt_length,
             patch_image_size=self.cfg.patch_image_size,
             imagenet_default_mean_and_std=self.cfg.imagenet_default_mean_and_std,
-            scst=getattr(self.cfg, 'scst', False)
+            scst=getattr(self.cfg, "scst", False),
         )
 
     def build_model(self, cfg):
@@ -99,20 +99,18 @@ class CaptionTask(OFATask):
                 self.CiderD_scorer = CiderD(df=self.cfg.eval_cider_cached_tokens)
         if self.cfg.scst:
             scst_args = json.loads(self.cfg.scst_args)
-            self.scst_generator = self.build_generator(
-                [model], Namespace(**scst_args)
-            )
+            self.scst_generator = self.build_generator([model], Namespace(**scst_args))
 
         return model
 
     def _calculate_cider_scores(self, gen_res, gt_res):
-        '''
+        """
         gen_res: generated captions, list of str
         gt_idx: list of int, of the same length as gen_res
         gt_res: ground truth captions, list of list of str.
             gen_res[i] corresponds to gt_res[gt_idx[i]]
             Each image can have multiple ground truth captions
-        '''
+        """
         gen_res_size = len(gen_res)
 
         res = OrderedDict()
@@ -127,7 +125,7 @@ class CaptionTask(OFATask):
         for i in range(gen_res_size):
             gts[i] = gt_res_[i]
 
-        res_ = [{'image_id': i, 'caption': res[i]} for i in range(len(res))]
+        res_ = [{"image_id": i, "caption": res[i]} for i in range(len(res))]
         _, scores = self.CiderD_scorer.compute_score(gts, res_)
         return scores
 
@@ -139,7 +137,9 @@ class CaptionTask(OFATask):
             hyps, refs = self._inference(self.sequence_generator, sample, model)
             if self.cfg.eval_bleu:
                 if self.cfg.eval_tokenized_bleu:
-                    bleu = sacrebleu.corpus_bleu(hyps, list(zip_longest(*refs)), tokenize="none")
+                    bleu = sacrebleu.corpus_bleu(
+                        hyps, list(zip_longest(*refs)), tokenize="none"
+                    )
                 else:
                     bleu = sacrebleu.corpus_bleu(hyps, list(zip_longest(*refs)))
                 logging_output["_bleu_sys_len"] = bleu.sys_len
@@ -162,6 +162,7 @@ class CaptionTask(OFATask):
 
         def sum_logs(key):
             import torch
+
             result = sum(log.get(key, 0) for log in logging_outputs)
             if torch.is_tensor(result):
                 result = result.cpu()
@@ -182,6 +183,7 @@ class CaptionTask(OFATask):
 
                 def compute_bleu(meters):
                     import inspect
+
                     import sacrebleu
 
                     fn_sig = inspect.getfullargspec(sacrebleu.compute_bleu)[0]
@@ -201,6 +203,7 @@ class CaptionTask(OFATask):
                 metrics.log_derived("bleu", compute_bleu)
 
         if self.cfg.eval_cider:
+
             def compute_cider(meters):
                 cider = meters["_cider_score_sum"].sum / meters["_cider_cnt"].sum
                 cider = cider if isinstance(cider, float) else cider.item()
@@ -212,7 +215,6 @@ class CaptionTask(OFATask):
                 metrics.log_derived("cider", compute_cider)
 
     def _inference(self, generator, sample, model):
-
         def decode(toks, escape_unk=False):
             s = self.tgt_dict.string(
                 toks.int().cpu(),
@@ -239,11 +241,11 @@ class CaptionTask(OFATask):
                     for sent in decode(
                         utils.strip_pad(sample["target"][i], self.tgt_dict.pad()),
                         escape_unk=True,  # don't count <unk> as matches to the hypo
-                    ).split('&&')
+                    ).split("&&")
                 ]
             )
         if self.cfg.eval_print_samples:
             logger.info("example hypothesis: " + hyps[0])
-            logger.info("example reference: " + ' && '.join(refs[0]))
+            logger.info("example reference: " + " && ".join(refs[0]))
 
         return hyps, refs

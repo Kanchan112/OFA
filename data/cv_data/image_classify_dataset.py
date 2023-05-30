@@ -1,25 +1,24 @@
-# Copyright 2022 The OFA-Sys Team. 
+# Copyright 2022 The OFA-Sys Team.
 # All rights reserved.
-# This source code is licensed under the Apache 2.0 license 
+# This source code is licensed under the Apache 2.0 license
 # found in the LICENSE file in the root directory.
 
-from io import BytesIO
-
-import logging
-import warnings
+import base64
 import functools
+import logging
+import sys
+import warnings
+from io import BytesIO
 
 import numpy as np
 import torch
-import base64
-from torchvision import transforms
-from timm.data import create_transform
-from utils.vision_helper import RandomAugment
-
-from PIL import Image, ImageFile
-
 from data import data_utils
 from data.ofa_dataset import OFADataset
+from PIL import Image, ImageFile
+from timm.data import create_transform
+from torchvision import transforms
+
+from OFA.utils.vision_helper import RandomAugment
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 ImageFile.MAX_IMAGE_PIXELS = None
@@ -30,6 +29,7 @@ warnings.filterwarnings("ignore", "(Possibly )?corrupt EXIF data", UserWarning)
 
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
+
 
 def collate(samples, pad_idx, eos_idx):
     if len(samples) == 0:
@@ -44,18 +44,20 @@ def collate(samples, pad_idx, eos_idx):
 
     id = np.array([s["id"] for s in samples])
     src_tokens = merge("source")
-    src_lengths = torch.LongTensor([s["source"].ne(pad_idx).long().sum() for s in samples])
+    src_lengths = torch.LongTensor(
+        [s["source"].ne(pad_idx).long().sum() for s in samples]
+    )
 
-    patch_images = torch.stack([sample['patch_image'] for sample in samples], dim=0)
-    patch_masks = torch.cat([sample['patch_mask'] for sample in samples])
+    patch_images = torch.stack([sample["patch_image"] for sample in samples], dim=0)
+    patch_masks = torch.cat([sample["patch_mask"] for sample in samples])
 
     conf = None
     if samples[0].get("conf", None) is not None:
-        conf = torch.cat([s['conf'] for s in samples], dim=0)
+        conf = torch.cat([s["conf"] for s in samples], dim=0)
 
     ref_dict = None
     if samples[0].get("ref_dict", None) is not None:
-        ref_dict = np.array([s['ref_dict'] for s in samples])
+        ref_dict = np.array([s["ref_dict"] for s in samples])
 
     constraint_masks = None
     if samples[0].get("constraint_mask", None) is not None:
@@ -84,7 +86,7 @@ def collate(samples, pad_idx, eos_idx):
             "src_lengths": src_lengths,
             "patch_images": patch_images,
             "patch_masks": patch_masks,
-            "prev_output_tokens": prev_output_tokens
+            "prev_output_tokens": prev_output_tokens,
         },
         "conf": conf,
         "ref_dict": ref_dict,
@@ -107,7 +109,7 @@ class ImageClassifyDataset(OFADataset):
         max_tgt_length=30,
         patch_image_size=224,
         constraint_trie=None,
-        imagenet_default_mean_and_std=False
+        imagenet_default_mean_and_std=False,
     ):
         super().__init__(split, dataset, bpe, src_dict, tgt_dict)
         self.max_src_length = max_src_length
@@ -123,34 +125,64 @@ class ImageClassifyDataset(OFADataset):
             mean = [0.5, 0.5, 0.5]
             std = [0.5, 0.5, 0.5]
 
-        if self.split != 'train':
-            self.patch_resize_transform = transforms.Compose([
-                lambda image: image.convert("RGB"),
-                transforms.Resize([patch_image_size, patch_image_size], interpolation=Image.BICUBIC),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=mean, std=std),
-            ])
+        if self.split != "train":
+            self.patch_resize_transform = transforms.Compose(
+                [
+                    lambda image: image.convert("RGB"),
+                    transforms.Resize(
+                        [patch_image_size, patch_image_size],
+                        interpolation=Image.BICUBIC,
+                    ),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=mean, std=std),
+                ]
+            )
             logger.info("val split, do not use random augmentation.")
         else:
             self.patch_resize_transform = create_transform(
                 input_size=patch_image_size,
                 is_training=True,
                 color_jitter=0.4,
-                auto_augment='rand-m9-mstd0.5-inc1',
-                interpolation='bicubic',
+                auto_augment="rand-m9-mstd0.5-inc1",
+                interpolation="bicubic",
                 re_prob=0.25,
-                re_mode='pixel',
+                re_mode="pixel",
                 re_count=1,
                 mean=mean,
                 std=std,
             )
-            self.patch_resize_transform = transforms.Compose(functools.reduce(lambda x, y:x + y, [
-                [lambda image: image.convert("RGB"),],
-                self.patch_resize_transform.transforms[:2],
-                [self.patch_resize_transform.transforms[2]],
-                [RandomAugment(2, 7, isPIL=True, augs=['Identity', 'AutoContrast', 'Equalize', 'Brightness', 'Sharpness', 'ShearX', 'ShearY', 'TranslateX', 'TranslateY', 'Rotate']), ],
-                self.patch_resize_transform.transforms[3:],
-            ]))
+            self.patch_resize_transform = transforms.Compose(
+                functools.reduce(
+                    lambda x, y: x + y,
+                    [
+                        [
+                            lambda image: image.convert("RGB"),
+                        ],
+                        self.patch_resize_transform.transforms[:2],
+                        [self.patch_resize_transform.transforms[2]],
+                        [
+                            RandomAugment(
+                                2,
+                                7,
+                                isPIL=True,
+                                augs=[
+                                    "Identity",
+                                    "AutoContrast",
+                                    "Equalize",
+                                    "Brightness",
+                                    "Sharpness",
+                                    "ShearX",
+                                    "ShearY",
+                                    "TranslateX",
+                                    "TranslateY",
+                                    "Rotate",
+                                ],
+                            ),
+                        ],
+                        self.patch_resize_transform.transforms[3:],
+                    ],
+                )
+            )
             logger.info("train split, use random augmentation.")
 
     def __getitem__(self, index):
@@ -160,7 +192,7 @@ class ImageClassifyDataset(OFADataset):
         patch_image = self.patch_resize_transform(image)
         patch_mask = torch.tensor([True])
 
-        src_item = self.encode_text(' what does the image describe?')
+        src_item = self.encode_text(" what does the image describe?")
         tgt_item = self.encode_text(" {}".format(label_name))
         ref_dict = {label_name: 1.0}
 
@@ -178,10 +210,14 @@ class ImageClassifyDataset(OFADataset):
             "ref_dict": ref_dict,
         }
         if self.constraint_trie is not None:
-            constraint_mask = torch.zeros((len(prev_output_item), len(self.tgt_dict))).bool()
+            constraint_mask = torch.zeros(
+                (len(prev_output_item), len(self.tgt_dict))
+            ).bool()
             for i in range(len(prev_output_item)):
-                constraint_prefix_token = prev_output_item[:i+1].tolist()
-                constraint_nodes = self.constraint_trie.get_next_layer(constraint_prefix_token)
+                constraint_prefix_token = prev_output_item[: i + 1].tolist()
+                constraint_nodes = self.constraint_trie.get_next_layer(
+                    constraint_prefix_token
+                )
                 constraint_mask[i][constraint_nodes] = True
             example["constraint_mask"] = constraint_mask
         return example

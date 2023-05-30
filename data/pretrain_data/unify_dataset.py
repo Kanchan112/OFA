@@ -3,24 +3,22 @@
 # This source code is licensed under the Apache 2.0 license
 # found in the LICENSE file in the root directory.
 
-from io import BytesIO
-
-import math
+import base64
 import logging
+import math
 import random
 import warnings
+from io import BytesIO
 
 import numpy as np
 import torch
-import base64
-from torchvision import transforms
-
-from PIL import Image, ImageFile
-
 from data import data_utils
 from data.ofa_dataset import OFADataset
-from utils.vision_helper import RandomAugment
-import utils.transforms as T
+from PIL import Image, ImageFile
+from torchvision import transforms
+
+import OFA.utils.transforms as T
+from OFA.utils.vision_helper import RandomAugment
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 ImageFile.MAX_IMAGE_PIXELS = None
@@ -65,22 +63,26 @@ def collate(samples, pad_idx, eos_idx):
 
     id = np.array([s["id"] for s in samples])
     src_tokens = merge("source")
-    src_lengths = torch.LongTensor([s["source"].ne(pad_idx).long().sum() for s in samples])
+    src_lengths = torch.LongTensor(
+        [s["source"].ne(pad_idx).long().sum() for s in samples]
+    )
 
-    patch_images = torch.stack([sample['patch_image'] for sample in samples], dim=0)
-    patch_masks = torch.cat([sample['patch_mask'] for sample in samples])
+    patch_images = torch.stack([sample["patch_image"] for sample in samples], dim=0)
+    patch_masks = torch.cat([sample["patch_mask"] for sample in samples])
 
     code_masks = None
     if samples[0].get("code_mask", None) is not None:
-        code_masks = torch.cat([sample['code_mask'] for sample in samples])
+        code_masks = torch.cat([sample["code_mask"] for sample in samples])
 
-    conf = torch.cat([s['conf'] for s in samples], dim=0)
+    conf = torch.cat([s["conf"] for s in samples], dim=0)
 
     prev_output_tokens = None
     target = None
     if samples[0].get("target", None) is not None:
         target = merge("target")
-        tgt_lengths = torch.LongTensor([s["target"].ne(pad_idx).long().sum() for s in samples])
+        tgt_lengths = torch.LongTensor(
+            [s["target"].ne(pad_idx).long().sum() for s in samples]
+        )
         ntokens = tgt_lengths.sum().item()
 
         if samples[0].get("prev_output_tokens", None) is not None:
@@ -98,10 +100,10 @@ def collate(samples, pad_idx, eos_idx):
             "patch_images": patch_images,
             "patch_masks": patch_masks,
             "code_masks": code_masks,
-            "prev_output_tokens": prev_output_tokens
+            "prev_output_tokens": prev_output_tokens,
         },
         "target": target,
-        "conf": conf
+        "conf": conf,
     }
 
     return batch
@@ -135,7 +137,7 @@ class UnifyDataset(OFADataset):
         keep_ratio=0.0,
         mask_length="span-poisson",
         poisson_lambda=3.0,
-        replace_length=1
+        replace_length=1,
     ):
         super().__init__(split, dataset, bpe, src_dict, tgt_dict)
         self.max_src_length = max_src_length
@@ -197,51 +199,94 @@ class UnifyDataset(OFADataset):
         self.mask_left = self.mask_top = int(0.5 * self.code_image_size)
         self.mask_right = self.mask_bottom = int(1.5 * self.code_image_size)
         self.mask_ids = [
-            i*self.code_image_size*2+j
-            for i in range(self.code_image_size*2) for j in range(self.code_image_size*2)
-            if not (self.mask_left <= i < self.mask_right and self.mask_top <= j < self.mask_bottom)
+            i * self.code_image_size * 2 + j
+            for i in range(self.code_image_size * 2)
+            for j in range(self.code_image_size * 2)
+            if not (
+                self.mask_left <= i < self.mask_right
+                and self.mask_top <= j < self.mask_bottom
+            )
         ]
 
         scales = np.arange(patch_image_size, 481).tolist()
 
         # for image-text pair
-        self.patch_resize_transform = transforms.Compose([
-            T.RandomResize(scales, max_size=672),
-            transforms.CenterCrop(patch_image_size),
-            RandomAugment(2, 7, isPIL=True, augs=['Identity', 'AutoContrast', 'Equalize', 'Brightness', 'Sharpness',
-                                                  'ShearX', 'ShearY', 'TranslateX', 'TranslateY', 'Rotate']),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ])
+        self.patch_resize_transform = transforms.Compose(
+            [
+                T.RandomResize(scales, max_size=672),
+                transforms.CenterCrop(patch_image_size),
+                RandomAugment(
+                    2,
+                    7,
+                    isPIL=True,
+                    augs=[
+                        "Identity",
+                        "AutoContrast",
+                        "Equalize",
+                        "Brightness",
+                        "Sharpness",
+                        "ShearX",
+                        "ShearY",
+                        "TranslateX",
+                        "TranslateY",
+                        "Rotate",
+                    ],
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        )
         # for pure image
-        self.patch_crop_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ])
+        self.patch_crop_transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        )
         # for detection
-        self.detection_transform = T.Compose([
-            T.RandomHorizontalFlip(),
-            T.LargeScaleJitter(output_size=self.code_image_size*2, aug_scale_min=1.0, aug_scale_max=1.5),
-            T.ToTensor(),
-            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], max_image_size=max_image_size)
-        ])
+        self.detection_transform = T.Compose(
+            [
+                T.RandomHorizontalFlip(),
+                T.LargeScaleJitter(
+                    output_size=self.code_image_size * 2,
+                    aug_scale_min=1.0,
+                    aug_scale_max=1.5,
+                ),
+                T.ToTensor(),
+                T.Normalize(
+                    mean=[0.5, 0.5, 0.5],
+                    std=[0.5, 0.5, 0.5],
+                    max_image_size=max_image_size,
+                ),
+            ]
+        )
         # for visual grounding
-        self.visual_grounding_transform = T.Compose([
-            T.RandomResize(scales, max_size=672),
-            T.ObjectCenterCrop((patch_image_size, patch_image_size)),
-            T.ToTensor(),
-            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], max_image_size=max_image_size)
-        ])
+        self.visual_grounding_transform = T.Compose(
+            [
+                T.RandomResize(scales, max_size=672),
+                T.ObjectCenterCrop((patch_image_size, patch_image_size)),
+                T.ToTensor(),
+                T.Normalize(
+                    mean=[0.5, 0.5, 0.5],
+                    std=[0.5, 0.5, 0.5],
+                    max_image_size=max_image_size,
+                ),
+            ]
+        )
 
     def set_epoch(self, epoch, **unused):
         self.epoch = epoch
 
     def get_negative_caption(self, caption, gt_objects):
         prob = random.random()
-        if gt_objects is not None and gt_objects != '' and prob > 0.6:
-            gt_object = random.choice(gt_objects.strip().split('&&'))
+        if gt_objects is not None and gt_objects != "" and prob > 0.6:
+            gt_object = random.choice(gt_objects.strip().split("&&"))
             negative_object = random.choice(self.all_object_list[:-1])
-            negative_object = self.all_object_list[-1] if negative_object == gt_object else negative_object
+            negative_object = (
+                self.all_object_list[-1]
+                if negative_object == gt_object
+                else negative_object
+            )
             negative_caption = caption.replace(gt_object, negative_object)
         else:
             negative_caption = random.choice(self.all_caption_list)
@@ -251,74 +296,137 @@ class UnifyDataset(OFADataset):
         prob = random.random()
         if conf > (prob + 0.1) and answer in self.ans2type_dict:
             negative_answer_type = self.ans2type_dict[answer]
-            if negative_answer_type == 'how many' and answer.isdigit() and prob > 0.5:
-                negative_answer = int(answer) + random.choice([-1, 1]) if answer != 0 else 1
+            if negative_answer_type == "how many" and answer.isdigit() and prob > 0.5:
+                negative_answer = (
+                    int(answer) + random.choice([-1, 1]) if answer != 0 else 1
+                )
             else:
                 negative_answer_list = self.type2ans_dict[negative_answer_type]
                 negative_answer = random.choice(negative_answer_list[:-1])
-                negative_answer = negative_answer_list[-1] if negative_answer == answer else negative_answer
+                negative_answer = (
+                    negative_answer_list[-1]
+                    if negative_answer == answer
+                    else negative_answer
+                )
             return negative_answer
 
-        negative_answer_list = self.type2ans_dict['other']
+        negative_answer_list = self.type2ans_dict["other"]
         negative_answer = random.choice(negative_answer_list[:-1])
-        negative_answer = negative_answer_list[-1] if negative_answer == answer else negative_answer
+        negative_answer = (
+            negative_answer_list[-1] if negative_answer == answer else negative_answer
+        )
         return negative_answer
 
     def process_image_text_pair(self, index):
-        uniq_id, image, caption, question, refs, gt_objects, dataset_name, type = self.dataset[index]
+        (
+            uniq_id,
+            image,
+            caption,
+            question,
+            refs,
+            gt_objects,
+            dataset_name,
+            type,
+        ) = self.dataset[index]
 
         image = Image.open(BytesIO(base64.urlsafe_b64decode(image))).convert("RGB")
-        patch_image = self.patch_resize_transform(image) if type != 'visual_grounding' else None
+        patch_image = (
+            self.patch_resize_transform(image) if type != "visual_grounding" else None
+        )
         patch_mask = torch.tensor([True])
         conf = torch.tensor([1.0])
-        if type == 'caption':
+        if type == "caption":
             tgt_caption = self.pre_caption(caption, self.max_tgt_length)
             pos_src_caption = self.pre_caption(caption, self.max_src_length)
-            neg_src_caption = self.pre_caption(self.get_negative_caption(caption, gt_objects), self.max_src_length)
+            neg_src_caption = self.pre_caption(
+                self.get_negative_caption(caption, gt_objects), self.max_src_length
+            )
             src_item = self.encode_text(" what does the image describe?")
             tgt_item = self.encode_text(" {}".format(tgt_caption))
-            pos_src_item = self.encode_text(' does the image describe " {} "?'.format(pos_src_caption))
-            neg_src_item = self.encode_text(' does the image describe " {} "?'.format(neg_src_caption))
-        elif type == 'qa':
+            pos_src_item = self.encode_text(
+                ' does the image describe " {} "?'.format(pos_src_caption)
+            )
+            neg_src_item = self.encode_text(
+                ' does the image describe " {} "?'.format(neg_src_caption)
+            )
+        elif type == "qa":
             question = self.pre_question(question, self.max_src_length)
-            ref_dict = {item.split('|!+')[1]: float(item.split('|!+')[0]) for item in refs.split('&&')}
+            ref_dict = {
+                item.split("|!+")[1]: float(item.split("|!+")[0])
+                for item in refs.split("&&")
+            }
             answer = max(ref_dict, key=ref_dict.get)
             conf = ref_dict[answer]
             src_item = self.encode_text(" {}".format(question))
             tgt_item = self.encode_text(" {}".format(answer))
             conf = torch.tensor([conf])
-            pos_src_item = self.encode_text(' what is the answer to question " {} ". is " {} "?'.format(question, answer))
-            neg_src_item = self.encode_text(
-                ' what is the answer to question " {} ". is " {} "?'.format(question, self.get_negative_answer(answer, conf))
+            pos_src_item = self.encode_text(
+                ' what is the answer to question " {} ". is " {} "?'.format(
+                    question, answer
+                )
             )
-        elif type == 'visual_grounding':
+            neg_src_item = self.encode_text(
+                ' what is the answer to question " {} ". is " {} "?'.format(
+                    question, self.get_negative_answer(answer, conf)
+                )
+            )
+        elif type == "visual_grounding":
             conf = torch.tensor([1.0])
             w, h = image.size
-            boxes_target = {"boxes": [], "labels": [], "area": [], "size": torch.tensor([h, w])}
-            x0, y0, x1, y1 = refs.strip().split(',')
-            boxes_target["boxes"] = torch.tensor([[float(x0), float(y0), float(x1), float(y1)]])
+            boxes_target = {
+                "boxes": [],
+                "labels": [],
+                "area": [],
+                "size": torch.tensor([h, w]),
+            }
+            x0, y0, x1, y1 = refs.strip().split(",")
+            boxes_target["boxes"] = torch.tensor(
+                [[float(x0), float(y0), float(x1), float(y1)]]
+            )
             boxes_target["labels"] = np.array([0])
-            boxes_target["area"] = torch.tensor([(float(x1) - float(x0)) * (float(y1) - float(y0))])
-            patch_image, boxes_target = self.visual_grounding_transform(image, boxes_target)
-            quant_x0 = "<bin_{}>".format(int((boxes_target["boxes"][0][0] * (self.num_bins - 1)).round()))
-            quant_y0 = "<bin_{}>".format(int((boxes_target["boxes"][0][1] * (self.num_bins - 1)).round()))
-            quant_x1 = "<bin_{}>".format(int((boxes_target["boxes"][0][2] * (self.num_bins - 1)).round()))
-            quant_y1 = "<bin_{}>".format(int((boxes_target["boxes"][0][3] * (self.num_bins - 1)).round()))
+            boxes_target["area"] = torch.tensor(
+                [(float(x1) - float(x0)) * (float(y1) - float(y0))]
+            )
+            patch_image, boxes_target = self.visual_grounding_transform(
+                image, boxes_target
+            )
+            quant_x0 = "<bin_{}>".format(
+                int((boxes_target["boxes"][0][0] * (self.num_bins - 1)).round())
+            )
+            quant_y0 = "<bin_{}>".format(
+                int((boxes_target["boxes"][0][1] * (self.num_bins - 1)).round())
+            )
+            quant_x1 = "<bin_{}>".format(
+                int((boxes_target["boxes"][0][2] * (self.num_bins - 1)).round())
+            )
+            quant_y1 = "<bin_{}>".format(
+                int((boxes_target["boxes"][0][3] * (self.num_bins - 1)).round())
+            )
             region_coord = "{} {} {} {}".format(quant_x0, quant_y0, quant_x1, quant_y1)
             src_caption = self.pre_caption(caption, self.max_src_length)
-            src_item = self.encode_text(' which region does the text " {} " describe?'.format(src_caption))
+            src_item = self.encode_text(
+                ' which region does the text " {} " describe?'.format(src_caption)
+            )
             tgt_item = self.encode_text(region_coord, use_bpe=False)
         else:
-            logger.info('type {} is not implemented'.format(type))
+            logger.info("type {} is not implemented".format(type))
             raise NotImplementedError
 
         src_item = torch.cat([self.bos_item, src_item, self.eos_item])
         target_item = torch.cat([tgt_item, self.eos_item])
         prev_output_item = torch.cat([self.bos_item, tgt_item])
-        pos_src_item = torch.cat([self.bos_item, pos_src_item, self.eos_item]) if type != 'visual_grounding' else None
-        neg_src_item = torch.cat([self.bos_item, neg_src_item, self.eos_item]) if type != 'visual_grounding' else None
+        pos_src_item = (
+            torch.cat([self.bos_item, pos_src_item, self.eos_item])
+            if type != "visual_grounding"
+            else None
+        )
+        neg_src_item = (
+            torch.cat([self.bos_item, neg_src_item, self.eos_item])
+            if type != "visual_grounding"
+            else None
+        )
 
-        if type == 'caption' and dataset_name == 'cc12m':
+        if type == "caption" and dataset_name == "cc12m":
             target_item[:2] = self.src_dict.pad()
             target_item[-1] = self.eos_item
 
@@ -334,33 +442,49 @@ class UnifyDataset(OFADataset):
 
         examples = [example]
         prob = random.random()
-        if type == 'visual_grounding':
+        if type == "visual_grounding":
             region_example = example.copy()
-            region_prefix_item = self.encode_text('  what does the region describe? region:')
-            region_coord_item = self.encode_text('{}'.format(region_coord), use_bpe=False)
+            region_prefix_item = self.encode_text(
+                "  what does the region describe? region:"
+            )
+            region_coord_item = self.encode_text(
+                "{}".format(region_coord), use_bpe=False
+            )
             region_src_item = torch.cat([region_prefix_item, region_coord_item])
-            region_tgt_item = self.encode_text(' {}'.format(self.pre_caption(caption, self.max_tgt_length)))
-            region_example["source"] = torch.cat([self.bos_item, region_src_item, self.eos_item])
+            region_tgt_item = self.encode_text(
+                " {}".format(self.pre_caption(caption, self.max_tgt_length))
+            )
+            region_example["source"] = torch.cat(
+                [self.bos_item, region_src_item, self.eos_item]
+            )
             region_example["target"] = torch.cat([region_tgt_item, self.eos_item])
-            region_example["prev_output_tokens"] = torch.cat([self.bos_item, region_tgt_item])
+            region_example["prev_output_tokens"] = torch.cat(
+                [self.bos_item, region_tgt_item]
+            )
             region_example["conf"] = torch.tensor([1.0])
             examples.append(region_example)
-        elif prob >= 0.5 and self.split == 'train':
+        elif prob >= 0.5 and self.split == "train":
             pos_example = example.copy()
             pos_example["source"] = pos_src_item
             pos_example["target"] = torch.cat([self.pos_tgt_item, self.eos_item])
-            pos_example["prev_output_tokens"] = torch.cat([self.bos_item, self.pos_tgt_item])
+            pos_example["prev_output_tokens"] = torch.cat(
+                [self.bos_item, self.pos_tgt_item]
+            )
             examples.append(pos_example)
-        elif self.split == 'train':
+        elif self.split == "train":
             neg_example = example.copy()
             neg_example["source"] = neg_src_item
             neg_example["target"] = torch.cat([self.neg_tgt_item, self.eos_item])
-            neg_example["prev_output_tokens"] = torch.cat([self.bos_item, self.neg_tgt_item])
+            neg_example["prev_output_tokens"] = torch.cat(
+                [self.bos_item, self.neg_tgt_item]
+            )
             examples.append(neg_example)
         return examples
 
     def process_pure_text(self, index):
-        patch_image = torch.zeros((3, self.code_image_size*2, self.code_image_size*2))
+        patch_image = torch.zeros(
+            (3, self.code_image_size * 2, self.code_image_size * 2)
+        )
         patch_mask = torch.tensor([False])
         code_mask = torch.tensor([False])
         conf = torch.tensor([2.0])
@@ -372,9 +496,13 @@ class UnifyDataset(OFADataset):
             text_item = self.encode_text(" {}".format(text), length=512)
             text_item = text_item[-256:]
             text_item = torch.cat([self.bos_item, text_item, self.eos_item])
-            mask_text_item = self.add_whole_word_mask(text_item.clone(), self.mask_ratio)
+            mask_text_item = self.add_whole_word_mask(
+                text_item.clone(), self.mask_ratio
+            )
             prefix_item = self.encode_text(' what is the complete text of " "?')
-            src_item = torch.cat([prefix_item[:-2], mask_text_item[1:-1], prefix_item[-2:]])
+            src_item = torch.cat(
+                [prefix_item[:-2], mask_text_item[1:-1], prefix_item[-2:]]
+            )
             tgt_item = text_item[1:-1]
             src_item = torch.cat([self.bos_item, src_item, self.eos_item])
             target_item = torch.cat([tgt_item, self.eos_item])
@@ -397,7 +525,9 @@ class UnifyDataset(OFADataset):
         image_id, image, code = self.pure_image_dataset[index]
         image = Image.open(BytesIO(base64.urlsafe_b64decode(image))).convert("RGB")
         patch_image = self.patch_crop_transform(image)
-        patch_image[:, self.mask_top:self.mask_bottom, self.mask_left:self.mask_right] = 0
+        patch_image[
+            :, self.mask_top : self.mask_bottom, self.mask_left : self.mask_right
+        ] = 0
         patch_mask = torch.tensor([True])
         src_item = self.encode_text(" what is the image in the middle part?")
         image_code = torch.LongTensor([int(num) for num in code.strip().split()])
@@ -426,13 +556,20 @@ class UnifyDataset(OFADataset):
         image = Image.open(BytesIO(base64.urlsafe_b64decode(image))).convert("RGB")
 
         w, h = image.size
-        boxes_target = {"boxes": [], "labels": [], "area": [], "size": torch.tensor([h, w])}
-        label_list = label.strip().split('&&')
+        boxes_target = {
+            "boxes": [],
+            "labels": [],
+            "area": [],
+            "size": torch.tensor([h, w]),
+        }
+        label_list = label.strip().split("&&")
         for label in label_list:
-            x0, y0, x1, y1, cat_id, cat = label.strip().split(',', 5)
+            x0, y0, x1, y1, cat_id, cat = label.strip().split(",", 5)
             boxes_target["boxes"].append([float(x0), float(y0), float(x1), float(y1)])
             boxes_target["labels"].append(cat)
-            boxes_target["area"].append((float(x1) - float(x0)) * (float(y1) - float(y0)))
+            boxes_target["area"].append(
+                (float(x1) - float(x0)) * (float(y1) - float(y0))
+            )
         boxes_target["boxes"] = torch.tensor(boxes_target["boxes"])
         boxes_target["labels"] = np.array(boxes_target["labels"])
         boxes_target["area"] = torch.tensor(boxes_target["area"])
@@ -444,10 +581,15 @@ class UnifyDataset(OFADataset):
 
         quant_boxes = []
         for i, box in enumerate(boxes_target["boxes"]):
-            quant_boxes.extend(["<bin_{}>".format(int((pos * (self.num_bins - 1)).round())) for pos in box[:4]])
-            quant_boxes.append(self.bpe.encode(' {}'.format(boxes_target["labels"][i])))
-        src_item = self.encode_text(' what are the objects in the image?')
-        tgt_item = self.encode_text(' '.join(quant_boxes), use_bpe=False)
+            quant_boxes.extend(
+                [
+                    "<bin_{}>".format(int((pos * (self.num_bins - 1)).round()))
+                    for pos in box[:4]
+                ]
+            )
+            quant_boxes.append(self.bpe.encode(" {}".format(boxes_target["labels"][i])))
+        src_item = self.encode_text(" what are the objects in the image?")
+        tgt_item = self.encode_text(" ".join(quant_boxes), use_bpe=False)
 
         src_item = torch.cat([self.bos_item, src_item, self.eos_item])
         target_item = torch.cat([tgt_item, self.eos_item])
@@ -469,10 +611,16 @@ class UnifyDataset(OFADataset):
         with data_utils.numpy_seed(self.seed, self.epoch):
             pair_samples = self.process_image_text_pair(index)
             extra_samples = []
-            if self.split == 'train' and self.dataset.data_cnt % 8 == 0:
-                extra_samples += self.process_pure_text(0) if self.pure_text_dataset else []
-                extra_samples += self.process_pure_image(0) if self.pure_image_dataset else []
-                extra_samples += self.process_detection(0) if self.detection_dataset else []
+            if self.split == "train" and self.dataset.data_cnt % 8 == 0:
+                extra_samples += (
+                    self.process_pure_text(0) if self.pure_text_dataset else []
+                )
+                extra_samples += (
+                    self.process_pure_image(0) if self.pure_image_dataset else []
+                )
+                extra_samples += (
+                    self.process_detection(0) if self.detection_dataset else []
+                )
         return pair_samples, extra_samples
 
     def word_starts(self, source):
@@ -543,7 +691,9 @@ class UnifyDataset(OFADataset):
             # keep index, but replace it with [MASK]
             source[indices] = self.mask_idx
             source[indices[mask_random]] = torch.randint(
-                4, len(self.tgt_dict) - self.code_dict_size - self.num_bins, size=(mask_random.sum(),)
+                4,
+                len(self.tgt_dict) - self.code_dict_size - self.num_bins,
+                size=(mask_random.sum(),),
             )
 
         if self.mask_span_distribution is not None:
@@ -564,7 +714,9 @@ class UnifyDataset(OFADataset):
                     # keep index, but replace it with [MASK]
                     source[indices] = self.mask_idx
                     source[indices[mask_random]] = torch.randint(
-                        4, len(self.tgt_dict) - self.code_dict_size - self.num_bins, size=(mask_random.sum(),)
+                        4,
+                        len(self.tgt_dict) - self.code_dict_size - self.num_bins,
+                        size=(mask_random.sum(),),
                     )
         else:
             # A bit faster when all lengths are 1
@@ -579,7 +731,9 @@ class UnifyDataset(OFADataset):
                     # keep index, but replace it with [MASK]
                     source[indices] = self.mask_idx
                     source[indices[mask_random]] = torch.randint(
-                        4, len(self.tgt_dict) - self.code_dict_size - self.num_bins, size=(mask_random.sum(),)
+                        4,
+                        len(self.tgt_dict) - self.code_dict_size - self.num_bins,
+                        size=(mask_random.sum(),),
                     )
 
                 assert source_length - 1 not in indices
@@ -606,7 +760,9 @@ class UnifyDataset(OFADataset):
         num_random = int(math.ceil(n * self.random_ratio))
         result[noise_indices[num_random:]] = self.mask_idx
         result[noise_indices[:num_random]] = torch.randint(
-            low=4, high=len(self.tgt_dict)-self.code_dict_size-self.num_bins, size=(num_random,)
+            low=4,
+            high=len(self.tgt_dict) - self.code_dict_size - self.num_bins,
+            size=(num_random,),
         )
 
         result[~noise_mask] = tokens
@@ -622,8 +778,8 @@ class UnifyDataset(OFADataset):
             Tuple[dict]: two mini-batch containing the data of different tasks
         """
 
-        samples_v1 = []   # containing image-text pairs
-        samples_v2 = []   # containing detection data, text data and image data
+        samples_v1 = []  # containing image-text pairs
+        samples_v2 = []  # containing detection data, text data and image data
         for sample_tuple in samples:
             samples_v1 += sample_tuple[0]
             samples_v2 += sample_tuple[1]

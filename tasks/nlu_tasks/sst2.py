@@ -1,6 +1,6 @@
-# Copyright 2022 The OFA-Sys Team. 
+# Copyright 2022 The OFA-Sys Team.
 # All rights reserved.
-# This source code is licensed under the Apache 2.0 license 
+# This source code is licensed under the Apache 2.0 license
 # found in the LICENSE file in the root directory.
 
 import json
@@ -10,14 +10,14 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
+from data.file_dataset import FileDataset
+from data.nlu_data.sst2_dataset import SST2Dataset
 from fairseq import metrics
 from fairseq.dataclass import ChoiceEnum
 from fairseq.tasks import register_task
+from tasks.ofa_task import OFAConfig, OFATask
 
-from tasks.ofa_task import OFATask, OFAConfig
-from data.nlu_data.sst2_dataset import SST2Dataset
-from data.file_dataset import FileDataset
-from utils.trie import Trie
+from OFA.utils.trie import Trie
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class SST2Config(OFAConfig):
     ans2label_dict: Optional[str] = field(
         default='{"negative": 0, "positive":1}',
-        metadata={"help": 'answer to label dict'},
+        metadata={"help": "answer to label dict"},
     )
     prompt_type: ChoiceEnum(["none", "src", "prev_output"]) = field(
         default="none",
@@ -41,10 +41,10 @@ class SST2Task(OFATask):
         self.ans2label_dict = json.loads(self.cfg.ans2label_dict)
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
-        paths = self.cfg.data.split(',')
+        paths = self.cfg.data.split(",")
         assert len(paths) > 0
 
-        if split == 'train':
+        if split == "train":
             file_path = paths[(epoch - 1) % (len(paths) - 1)]
         else:
             file_path = paths[-1]
@@ -59,7 +59,7 @@ class SST2Task(OFATask):
             max_src_length=self.cfg.max_src_length,
             max_tgt_length=self.cfg.max_tgt_length,
             constraint_trie=self.constraint_trie,
-            prompt_type=self.cfg.prompt_type
+            prompt_type=self.cfg.prompt_type,
         )
 
     def build_model(self, cfg):
@@ -67,18 +67,27 @@ class SST2Task(OFATask):
         self.constraint_trie = Trie(self.tgt_dict.eos())
         for i, answer in enumerate(self.ans2label_dict.keys()):
             answer_item = self.tgt_dict.encode_line(
-                line=self.bpe.encode(' ' + answer),
+                line=self.bpe.encode(" " + answer),
                 add_if_not_exist=False,
-                append_eos=False
+                append_eos=False,
             ).long()
-            self.constraint_trie.insert([self.tgt_dict.bos()] + answer_item.tolist() + [self.tgt_dict.eos()])
+            self.constraint_trie.insert(
+                [self.tgt_dict.bos()] + answer_item.tolist() + [self.tgt_dict.eos()]
+            )
 
         return model
 
     def build_generator(
-        self, models, args, seq_gen_cls=None, extra_gen_cls_kwargs=None, prefix_allowed_tokens_fn=None,
+        self,
+        models,
+        args,
+        seq_gen_cls=None,
+        extra_gen_cls_kwargs=None,
+        prefix_allowed_tokens_fn=None,
     ):
-        seq_generator = super().build_generator(models, args, seq_gen_cls, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)
+        seq_generator = super().build_generator(
+            models, args, seq_gen_cls, extra_gen_cls_kwargs, prefix_allowed_tokens_fn
+        )
         seq_generator.constraint_trie = self.constraint_trie
 
         return seq_generator
@@ -89,12 +98,23 @@ class SST2Task(OFATask):
         with torch.no_grad():
             net_output = model(**sample["net_input"])
             net_output[0].masked_fill_(~sample["constraint_masks"], -math.inf)
-            last_token_ids = sample["net_input"]["prev_output_tokens"].ne(self.src_dict.pad()).sum(1, keepdim=True) - 1
-            logits = net_output[0].gather(1, last_token_ids.unsqueeze(2).expand(-1, -1, net_output[0].size(2)))
+            last_token_ids = (
+                sample["net_input"]["prev_output_tokens"]
+                .ne(self.src_dict.pad())
+                .sum(1, keepdim=True)
+                - 1
+            )
+            logits = net_output[0].gather(
+                1, last_token_ids.unsqueeze(2).expand(-1, -1, net_output[0].size(2))
+            )
             logits = logits.squeeze(1)
             predicts = logits.argmax(1).tolist()
-            hyps = [self.bpe.decode(self.src_dict[predict]).strip() for predict in predicts]
-            scores = [ref_dict.get(hyp, 0) for ref_dict, hyp in zip(sample['ref_dict'], hyps)]
+            hyps = [
+                self.bpe.decode(self.src_dict[predict]).strip() for predict in predicts
+            ]
+            scores = [
+                ref_dict.get(hyp, 0) for ref_dict, hyp in zip(sample["ref_dict"], hyps)
+            ]
         logging_output["_score_sum"] = sum(scores)
         logging_output["_score_cnt"] = len(scores)
 
@@ -105,6 +125,7 @@ class SST2Task(OFATask):
 
         def sum_logs(key):
             import torch
+
             result = sum(log.get(key, 0) for log in logging_outputs)
             if torch.is_tensor(result):
                 result = result.cpu()

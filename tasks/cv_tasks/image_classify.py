@@ -1,33 +1,34 @@
-# Copyright 2022 The OFA-Sys Team. 
+# Copyright 2022 The OFA-Sys Team.
 # All rights reserved.
-# This source code is licensed under the Apache 2.0 license 
+# This source code is licensed under the Apache 2.0 license
 # found in the LICENSE file in the root directory.
 
-from dataclasses import dataclass, field
 import json
 import logging
-import os
 import math
+import os
 import pickle
+from dataclasses import dataclass, field
 from typing import Optional
-from data.file_dataset import FileDataset
 
 import torch
+from data import data_utils
+from data.cv_data.image_classify_dataset import ImageClassifyDataset
+from data.file_dataset import FileDataset
 from fairseq import metrics
 from fairseq.tasks import register_task
-
-from data.cv_data.image_classify_dataset import ImageClassifyDataset
-from data import data_utils
 from tasks.ofa_task import OFAConfig, OFATask
-from utils.trie import Trie
+
+from OFA.utils.trie import Trie
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ImageClassifyConfig(OFAConfig):
     ans2label_dict: Optional[str] = field(
         default='{"no": 0, "yes":1}',
-        metadata={"help": 'answer to label dict'},
+        metadata={"help": "answer to label dict"},
     )
     ans2label_file: Optional[str] = field(
         default=None,
@@ -53,14 +54,14 @@ class ImageClassifyTask(OFATask):
             self.ans2label_dict = pickle.load(open(self.cfg.ans2label_file, "rb"))
         else:
             self.ans2label_dict = json.loads(self.cfg.ans2label_dict)
-        
+
         self.uses_ema = self.cfg.uses_ema
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
-        paths = self.cfg.data.split(',')
+        paths = self.cfg.data.split(",")
         assert len(paths) > 0
 
-        if split == 'train':
+        if split == "train":
             table_path = paths[(epoch - 1) % (len(paths) - 1)]
         else:
             table_path = paths[-1]
@@ -76,7 +77,7 @@ class ImageClassifyTask(OFATask):
             max_tgt_length=self.cfg.max_tgt_length,
             patch_image_size=self.cfg.patch_image_size,
             constraint_trie=self.constraint_trie,
-            imagenet_default_mean_and_std=self.cfg.imagenet_default_mean_and_std
+            imagenet_default_mean_and_std=self.cfg.imagenet_default_mean_and_std,
         )
 
     def build_model(self, cfg):
@@ -89,22 +90,32 @@ class ImageClassifyTask(OFATask):
         self.constraint_trie = Trie(self.tgt_dict.eos())
         for i, answer in enumerate(self.ans2label_dict.keys()):
             answer_item = self.tgt_dict.encode_line(
-                line=self.bpe.encode(' ' + answer),
+                line=self.bpe.encode(" " + answer),
                 add_if_not_exist=False,
-                append_eos=False
+                append_eos=False,
             ).long()
-            tgt_list += [torch.cat([answer_item, torch.LongTensor([self.tgt_dict.eos()])])]
-            prev_output_list += [torch.cat([torch.LongTensor([self.tgt_dict.bos()]), answer_item])]
+            tgt_list += [
+                torch.cat([answer_item, torch.LongTensor([self.tgt_dict.eos()])])
+            ]
+            prev_output_list += [
+                torch.cat([torch.LongTensor([self.tgt_dict.bos()]), answer_item])
+            ]
             self.index2ans[i] = answer
             self.ans2index[answer] = i
-            self.constraint_trie.insert([self.tgt_dict.bos()] + answer_item.tolist() + [self.tgt_dict.eos()])
+            self.constraint_trie.insert(
+                [self.tgt_dict.bos()] + answer_item.tolist() + [self.tgt_dict.eos()]
+            )
 
         constraint_mask_list = []
         for prev_output_item in prev_output_list:
-            constraint_mask = torch.zeros((len(prev_output_item), len(self.tgt_dict))).bool()
+            constraint_mask = torch.zeros(
+                (len(prev_output_item), len(self.tgt_dict))
+            ).bool()
             for i in range(len(prev_output_item)):
-                constraint_prefix_token = prev_output_item[:i+1].tolist()
-                constraint_nodes = self.constraint_trie.get_next_layer(constraint_prefix_token)
+                constraint_prefix_token = prev_output_item[: i + 1].tolist()
+                constraint_nodes = self.constraint_trie.get_next_layer(
+                    constraint_prefix_token
+                )
                 constraint_mask[i][constraint_nodes] = True
             constraint_mask_list.append(constraint_mask)
 
@@ -114,14 +125,18 @@ class ImageClassifyTask(OFATask):
         self.valid_prev_output_list = []
         self.valid_constraint_masks_list = []
         for i in range(0, len(tgt_list), self.cfg.valid_batch_size):
-            tgt_item = tgt_list[i:i+self.cfg.valid_batch_size]
-            prev_output_item = prev_output_list[i:i+self.cfg.valid_batch_size]
-            constrain_mask = constraint_mask_list[i:i+self.cfg.valid_batch_size]
+            tgt_item = tgt_list[i : i + self.cfg.valid_batch_size]
+            prev_output_item = prev_output_list[i : i + self.cfg.valid_batch_size]
+            constrain_mask = constraint_mask_list[i : i + self.cfg.valid_batch_size]
             self.valid_tgt_list.append(
-                data_utils.collate_tokens(tgt_item, pad_idx=pad, eos_idx=eos, left_pad=False)
+                data_utils.collate_tokens(
+                    tgt_item, pad_idx=pad, eos_idx=eos, left_pad=False
+                )
             )
             self.valid_prev_output_list.append(
-                data_utils.collate_tokens(prev_output_item, pad_idx=pad, eos_idx=eos, left_pad=False)
+                data_utils.collate_tokens(
+                    prev_output_item, pad_idx=pad, eos_idx=eos, left_pad=False
+                )
             )
             self.valid_constraint_masks_list.append(
                 data_utils.collate_tokens(constrain_mask, pad_idx=pad, left_pad=False)
@@ -130,9 +145,16 @@ class ImageClassifyTask(OFATask):
         return model
 
     def build_generator(
-        self, models, args, seq_gen_cls=None, extra_gen_cls_kwargs=None, prefix_allowed_tokens_fn=None,
+        self,
+        models,
+        args,
+        seq_gen_cls=None,
+        extra_gen_cls_kwargs=None,
+        prefix_allowed_tokens_fn=None,
     ):
-        seq_generator = super().build_generator(models, args, seq_gen_cls, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)
+        seq_generator = super().build_generator(
+            models, args, seq_gen_cls, extra_gen_cls_kwargs, prefix_allowed_tokens_fn
+        )
         seq_generator.constraint_trie = self.constraint_trie
 
         return seq_generator
@@ -141,9 +163,9 @@ class ImageClassifyTask(OFATask):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
 
         if self.uses_ema:
-            assert 'ema_model' in extra_kwargs and extra_kwargs['ema_model'] is not None
+            assert "ema_model" in extra_kwargs and extra_kwargs["ema_model"] is not None
         if self.uses_ema:
-            eval_model = extra_kwargs['ema_model']
+            eval_model = extra_kwargs["ema_model"]
         else:
             eval_model = model
 
@@ -154,32 +176,46 @@ class ImageClassifyTask(OFATask):
                 sample["net_input"]["src_tokens"],
                 src_lengths=sample["net_input"]["src_lengths"],
                 patch_images=sample["net_input"]["patch_images"],
-                patch_masks=sample["net_input"]["patch_masks"]
+                patch_masks=sample["net_input"]["patch_masks"],
             )
             device = sample["net_input"]["src_tokens"].device
             valid_result = []
-            for valid_tgt, valid_prev_output, valid_constraint_masks in zip(self.valid_tgt_list,
-                                                                            self.valid_prev_output_list,
-                                                                            self.valid_constraint_masks_list):
+            for valid_tgt, valid_prev_output, valid_constraint_masks in zip(
+                self.valid_tgt_list,
+                self.valid_prev_output_list,
+                self.valid_constraint_masks_list,
+            ):
                 valid_tgt_size = valid_tgt.size(0)
                 valid_tgt = valid_tgt.repeat(batch_size, 1).to(device)
                 valid_prev_output = valid_prev_output.repeat(batch_size, 1).to(device)
-                valid_constraint_masks = valid_constraint_masks.repeat(batch_size, 1, 1).to(device)
+                valid_constraint_masks = valid_constraint_masks.repeat(
+                    batch_size, 1, 1
+                ).to(device)
                 new_encoder_out = {}
                 new_encoder_out["encoder_out"] = [
-                    encoder_out["encoder_out"][0].repeat_interleave(valid_tgt_size, dim=1)
+                    encoder_out["encoder_out"][0].repeat_interleave(
+                        valid_tgt_size, dim=1
+                    )
                 ]
                 new_encoder_out["encoder_padding_mask"] = [
-                    encoder_out["encoder_padding_mask"][0].repeat_interleave(valid_tgt_size, dim=0)
+                    encoder_out["encoder_padding_mask"][0].repeat_interleave(
+                        valid_tgt_size, dim=0
+                    )
                 ]
                 new_encoder_out["position_embeddings"] = [
-                    encoder_out["position_embeddings"][0].repeat_interleave(valid_tgt_size, dim=0)
+                    encoder_out["position_embeddings"][0].repeat_interleave(
+                        valid_tgt_size, dim=0
+                    )
                 ]
 
-                decoder_out = eval_model.decoder(valid_prev_output, encoder_out=new_encoder_out)
+                decoder_out = eval_model.decoder(
+                    valid_prev_output, encoder_out=new_encoder_out
+                )
                 decoder_out[0].masked_fill_(~valid_constraint_masks, -math.inf)
                 lprobs = eval_model.get_normalized_probs(decoder_out, log_probs=True)
-                scores = lprobs.gather(dim=-1, index=valid_tgt.unsqueeze(-1)).squeeze(-1)
+                scores = lprobs.gather(dim=-1, index=valid_tgt.unsqueeze(-1)).squeeze(
+                    -1
+                )
                 scores = scores.masked_fill(valid_tgt.eq(self.tgt_dict.pad()), 0)
                 scores = scores.sum(1)
                 scores = scores.view(-1, valid_tgt_size)
@@ -188,7 +224,9 @@ class ImageClassifyTask(OFATask):
         valid_result = torch.cat(valid_result, dim=-1)
         predicts = valid_result.argmax(1).tolist()
         hyps = [self.index2ans[predict_index] for predict_index in predicts]
-        scores = [ref_dict.get(hyp, 0) for ref_dict, hyp in zip(sample['ref_dict'], hyps)]
+        scores = [
+            ref_dict.get(hyp, 0) for ref_dict, hyp in zip(sample["ref_dict"], hyps)
+        ]
         logging_output["_score_sum"] = sum(scores)
         logging_output["_score_cnt"] = len(scores)
 
@@ -199,6 +237,7 @@ class ImageClassifyTask(OFATask):
 
         def sum_logs(key):
             import torch
+
             result = sum(log.get(key, 0) for log in logging_outputs)
             if torch.is_tensor(result):
                 result = result.cpu()

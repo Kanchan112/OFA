@@ -1,4 +1,5 @@
 import re
+import sys
 from typing import Optional
 
 import numpy as np
@@ -11,13 +12,17 @@ from tasks.mm_tasks.vqa_gen import VqaGenTask
 
 # Image transform
 from torchvision import transforms as T
-from utils.zero_shot_utils import zero_shot_step
+
+from OFA.utils.zero_shot_utils import zero_shot_step
 
 # Register VQA task
 tasks.register_task("vqa_gen", VqaGenTask)
 
 # turn on cuda if GPU is available
-use_cuda = torch.cuda.is_available()
+#use_cuda = torch.cuda.is_available()
+#if use_cuda:
+#    torch.cuda.set_device('cuda:1')
+use_cuda = False
 
 # use fp16 only when GPU is available
 use_fp16 = False
